@@ -8,7 +8,8 @@
     "backend": {
       "root": "backend",
       "routePrefix": "/_/backend",
-      "framework": "flask"
+      "entrypoint": "main.py",
+      "runtime": "python3.11"
     }
   }
 }
