@@ -1,0 +1,14 @@
+# environment variables - NEVER upload these
+backend/.env
+
+# python
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/uploads/
+
+# node
+frontend/node_modules/
+
+# mac
+.DS_Store
