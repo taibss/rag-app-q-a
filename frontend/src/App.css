@@ -524,79 +524,61 @@ body {
 /* ── MOBILE RESPONSIVE ── */
 @media (max-width: 768px) {
 
-  /* login page stacks vertically */
-  .login-page {
-    flex-direction: column;
-  }
-
-  .login-left {
-    padding: 32px 24px;
-    gap: 12px;
-  }
-
+  /* login */
+  .login-page { flex-direction: column; }
+  .login-left { padding: 32px 24px; }
   .login-headline { font-size: 20px; }
   .login-features { display: none; }
+  .login-right { width: 100%; padding: 24px; border-top: 0.5px solid #3D5278; }
 
-  .login-right {
-    width: 100%;
-    padding: 24px;
-    border-top: 0.5px solid #3D5278;
+  /* hide sidebar completely */
+  .sidebar { display: none !important; }
+
+  /* app becomes vertical */
+  .app {
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
   }
 
-  /* hide sidebar on mobile */
-  .sidebar {
-    display: none;
-  }
-
-  /* main takes full width */
   .main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     width: 100%;
   }
 
-  /* topbar wraps */
+  /* topbar */
   .topbar {
     padding: 10px 14px;
-    flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
   }
 
-  .topbar-stats {
-    gap: 12px;
-  }
+  .topbar-stats { gap: 10px; }
+  .stat-num { font-size: 13px; }
+  .stat-label { font-size: 9px; }
 
-  /* messages full width */
-  .message {
-    max-width: 90%;
-  }
+  /* messages */
+  .messages { padding: 12px 14px; }
+  .message { max-width: 88%; font-size: 12px; }
 
-  .messages {
-    padding: 12px 14px;
-  }
+  /* input */
+  .input-row { padding: 10px 14px; }
+  .input-row textarea { font-size: 12px; }
 
-  /* input area */
-  .input-row {
-    padding: 10px 14px;
-  }
-
-  /* profile page */
-  .profile-stats {
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-  }
-
-  .profile-stat-num { font-size: 18px; }
-
-  /* add mobile top navbar */
+  /* show mobile nav */
   .mobile-nav {
     display: flex !important;
     background: #1B2A4A;
     padding: 12px 16px;
     align-items: center;
     justify-content: space-between;
+    flex-shrink: 0;
   }
 
   .mobile-nav-brand {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 500;
     color: #7A9CC4;
     letter-spacing: 2px;
@@ -608,23 +590,26 @@ body {
   .mobile-nav-profile {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     background: none;
     border: 0.5px solid #3D5278;
     padding: 5px 10px;
     border-radius: 6px;
     cursor: pointer;
     color: #F7F8FC;
-    font-size: 12px;
+    font-size: 11px;
     font-family: 'Inter', sans-serif;
   }
 
+  /* show mobile upload bar */
   .mobile-upload {
     display: flex !important;
     padding: 10px 14px;
     border-bottom: 0.5px solid #DDE1EC;
     gap: 8px;
     align-items: center;
+    flex-shrink: 0;
+    background: #F7F8FC;
   }
 
   .mobile-upload-btn {
@@ -640,6 +625,11 @@ body {
     text-align: center;
     font-family: 'Inter', sans-serif;
   }
+
+  /* profile */
+  .profile-stats { gap: 8px; }
+  .profile-stat-num { font-size: 18px; }
+  .profile-body { padding: 24px 16px; }
 }
 
 /* hide mobile elements on desktop */
