@@ -520,3 +520,128 @@ body {
 }
 
 .clear-btn:hover { border-color: #1B2A4A; color: #1B2A4A; }
+
+/* ── MOBILE RESPONSIVE ── */
+@media (max-width: 768px) {
+
+  /* login page stacks vertically */
+  .login-page {
+    flex-direction: column;
+  }
+
+  .login-left {
+    padding: 32px 24px;
+    gap: 12px;
+  }
+
+  .login-headline { font-size: 20px; }
+  .login-features { display: none; }
+
+  .login-right {
+    width: 100%;
+    padding: 24px;
+    border-top: 0.5px solid #3D5278;
+  }
+
+  /* hide sidebar on mobile */
+  .sidebar {
+    display: none;
+  }
+
+  /* main takes full width */
+  .main {
+    width: 100%;
+  }
+
+  /* topbar wraps */
+  .topbar {
+    padding: 10px 14px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .topbar-stats {
+    gap: 12px;
+  }
+
+  /* messages full width */
+  .message {
+    max-width: 90%;
+  }
+
+  .messages {
+    padding: 12px 14px;
+  }
+
+  /* input area */
+  .input-row {
+    padding: 10px 14px;
+  }
+
+  /* profile page */
+  .profile-stats {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .profile-stat-num { font-size: 18px; }
+
+  /* add mobile top navbar */
+  .mobile-nav {
+    display: flex !important;
+    background: #1B2A4A;
+    padding: 12px 16px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .mobile-nav-brand {
+    font-size: 12px;
+    font-weight: 500;
+    color: #7A9CC4;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .mobile-nav-brand span { color: #F7F8FC; }
+
+  .mobile-nav-profile {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: 0.5px solid #3D5278;
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #F7F8FC;
+    font-size: 12px;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .mobile-upload {
+    display: flex !important;
+    padding: 10px 14px;
+    border-bottom: 0.5px solid #DDE1EC;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .mobile-upload-btn {
+    flex: 1;
+    padding: 8px;
+    background: #1B2A4A;
+    color: #F7F8FC;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: center;
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+/* hide mobile elements on desktop */
+.mobile-nav { display: none; }
+.mobile-upload { display: none; }

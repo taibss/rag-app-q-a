@@ -227,6 +227,25 @@ export default function App() {
   // ── HOME ───────────────────────────────────────────────────────────────
   return (
     <div className="app">
+{/* mobile top navbar */}
+      <div className="mobile-nav">
+        <div className="mobile-nav-brand">doc<span>learn</span></div>
+        <button className="mobile-nav-profile" onClick={() => setPage("profile")}>
+          {getInitials(profile.name)} · {profile.name}
+        </button>
+      </div>
+
+      {/* mobile upload bar */}
+      <div className="mobile-upload">
+        <label className="mobile-upload-btn">
+          {uploading ? "uploading..." : "upload pdf"}
+          <input type="file" accept=".pdf" onChange={handleUpload}
+            disabled={uploading} style={{display:"none"}} />
+        </label>
+        <div style={{fontSize:"12px", color:"#8A93A8"}}>
+          {documents.length} doc{documents.length !== 1 ? "s" : ""}
+        </div>
+      </div>
       <div className="sidebar">
         <div className="sidebar-brand">doc<span>learn</span></div>
         <div className="sidebar-divider"></div>
