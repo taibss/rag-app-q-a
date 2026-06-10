@@ -8,3 +8,7 @@ services:
     envVars:
       - key: GEMINI_API_KEY
         sync: false
+    disk:
+      name: chroma-storage
+      mountPath: /data
+      sizeGB: 1

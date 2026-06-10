@@ -22,7 +22,11 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://rag-app-q-a-8d5d.vercel.app",
+        "https://rag-app-q-a.vercel.app",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -32,8 +36,9 @@ print("Loading embedding model...")
 # uses query/passage prefix format for better retrieval accuracy
 embedder = SentenceTransformer("BAAI/bge-base-en-v1.5")
 
-# chromadb persists to disk — survives server restarts
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
+# use /data on Render (persistent disk), fallback to local for development
+CHROMA_PATH = "/data/chroma_db" if os.path.exists("/data") else "./chroma_db"
+chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 collection = chroma_client.get_or_create_collection(
     name="documents",
     metadata={"hnsw:space": "cosine"}  # cosine similarity
@@ -82,11 +87,9 @@ def load_from_chroma():
         if not results["documents"]:
             print("ChromaDB is empty — fresh start")
             return
-
         chunks = results["documents"]
         metadata = results["metadatas"]
         documents = list(set(m["filename"] for m in metadata))
-
         # rebuild faiss from stored embeddings
         embeddings = np.array(results["embeddings"]).astype("float32")
         faiss_index = build_faiss_index(embeddings)
