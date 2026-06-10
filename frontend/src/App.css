@@ -6,6 +6,9 @@ body {
   font-family: 'Inter', sans-serif;
   background: #F7F8FC;
   min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 /* ── LOGIN ── */
@@ -125,7 +128,11 @@ body {
 .app {
   display: flex;
   height: 100vh;
+  width: 100vw;
   background: #F7F8FC;
+  position: fixed;
+  top: 0;
+  left: 0;
 }
 
 /* ── SIDEBAR ── */
