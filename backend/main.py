@@ -8,13 +8,12 @@ from sentence_transformers import SentenceTransformer #embedding model, text->nu
 import google.generativeai as genai #library to call LLM
 from dotenv import load_dotenv #.env file for the api key
 import os #for accessing the env
+import chromadb #persistent vector storage
 
 load_dotenv()
 
 # configure gemini with api key from .env
-genai.configure(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # load gemini 2.5 flash model
 gemini_model = genai.GenerativeModel("gemini-2.5-flash")
@@ -33,10 +32,18 @@ print("Loading embedding model...")
 # uses query/passage prefix format for better retrieval accuracy
 embedder = SentenceTransformer("BAAI/bge-base-en-v1.5")
 
-chunks = []
-metadata = []
+# chromadb persists to disk — survives server restarts
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+collection = chroma_client.get_or_create_collection(
+    name="documents",
+    metadata={"hnsw:space": "cosine"}  # cosine similarity
+)
+
+# in-memory list of document names
 documents = []
 faiss_index = None
+chunks = []
+metadata = []
 
 
 def extract_text_from_pdf(filepath):
@@ -61,25 +68,53 @@ def chunk_text(text, chunk_size=500, overlap=50):
 
 def build_faiss_index(embeddings):
     dimension = embeddings.shape[1]  # 768 for BAAI/bge-base-en-v1.5
-    faiss.normalize_L2(embeddings)   # normalize before adding — required for cosine similarity
-    index = faiss.IndexFlatIP(dimension)  # IndexFlatIP = inner product = cosine after normalization
+    faiss.normalize_L2(embeddings)   # normalize for cosine similarity
+    index = faiss.IndexFlatIP(dimension)  # inner product = cosine after normalization
     index.add(embeddings)
     return index
 
 
+def load_from_chroma():
+    """load all chunks from chromadb into memory and rebuild faiss on startup"""
+    global chunks, metadata, documents, faiss_index
+    try:
+        results = collection.get(include=["documents", "metadatas", "embeddings"])
+        if not results["documents"]:
+            print("ChromaDB is empty — fresh start")
+            return
+
+        chunks = results["documents"]
+        metadata = results["metadatas"]
+        documents = list(set(m["filename"] for m in metadata))
+
+        # rebuild faiss from stored embeddings
+        embeddings = np.array(results["embeddings"]).astype("float32")
+        faiss_index = build_faiss_index(embeddings)
+        print(f"Loaded {len(chunks)} chunks from ChromaDB ✅")
+    except Exception as e:
+        print(f"Could not load from ChromaDB: {e}")
+
+
 def rebuild_faiss():
-    """rebuilds the faiss index from scratch after a deletion"""
-    global faiss_index
-    if not chunks:
-        faiss_index = None  # no chunks left, reset index
-        return
-    # passage: prefix tells BAAI/bge this is a document chunk (not a query)
-    all_embeddings = embedder.encode(
-        [f"passage: {chunk}" for chunk in chunks],
-        show_progress_bar=False
-    )
-    all_embeddings = np.array(all_embeddings).astype("float32")
-    faiss_index = build_faiss_index(all_embeddings)
+    """rebuilds faiss index from chromadb after deletion"""
+    global faiss_index, chunks, metadata
+    try:
+        results = collection.get(include=["documents", "metadatas", "embeddings"])
+        if not results["documents"]:
+            faiss_index = None
+            chunks = []
+            metadata = []
+            return
+        chunks = results["documents"]
+        metadata = results["metadatas"]
+        embeddings = np.array(results["embeddings"]).astype("float32")
+        faiss_index = build_faiss_index(embeddings)
+    except Exception as e:
+        print(f"Rebuild faiss error: {e}")
+
+
+# load existing data from chromadb on startup
+load_from_chroma()
 
 
 @app.get("/documents")
@@ -105,22 +140,31 @@ async def upload_pdf(file: UploadFile = File(...)):
     new_metadata = []
     for page_num, page_text in pages:
         page_chunks = chunk_text(page_text)
-        for chunk in page_chunks:
+        for i, chunk in enumerate(page_chunks):
             new_chunks.append(chunk)
             new_metadata.append({"filename": file.filename, "page": page_num})
 
-    chunks.extend(new_chunks)
-    metadata.extend(new_metadata)
-    if file.filename not in documents:
-        documents.append(file.filename)
-
-    # passage: prefix for document chunks — matches rebuild_faiss
-    all_embeddings = embedder.encode(
-        [f"passage: {chunk}" for chunk in chunks],
+    # passage: prefix for document chunks
+    new_embeddings = embedder.encode(
+        [f"passage: {chunk}" for chunk in new_chunks],
         show_progress_bar=False
     )
-    all_embeddings = np.array(all_embeddings).astype("float32")
-    faiss_index = build_faiss_index(all_embeddings)
+    new_embeddings_list = new_embeddings.tolist()
+
+    # store in chromadb permanently
+    ids = [f"{file.filename}_{i}_{len(chunks)+i}" for i in range(len(new_chunks))]
+    collection.add(
+        documents=new_chunks,
+        metadatas=new_metadata,
+        embeddings=new_embeddings_list,
+        ids=ids
+    )
+
+    # reload everything from chromadb and rebuild faiss
+    rebuild_faiss()
+
+    if file.filename not in documents:
+        documents.append(file.filename)
 
     return {
         "message": f"Successfully processed {file.filename}",
@@ -131,22 +175,17 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.delete("/documents/{filename}")
 def delete_document(filename: str):
-    """removes a document and all its chunks from memory and rebuilds faiss"""
-    global chunks, metadata, documents
+    """removes a document and all its chunks from chromadb and rebuilds faiss"""
+    global documents
 
     if filename not in documents:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # filter out all chunks that belong to this file
-    new_chunks = []
-    new_metadata = []
-    for i, meta in enumerate(metadata):
-        if meta["filename"] != filename:
-            new_chunks.append(chunks[i])
-            new_metadata.append(metadata[i])
+    # get all ids belonging to this file from chromadb
+    results = collection.get(where={"filename": filename})
+    if results["ids"]:
+        collection.delete(ids=results["ids"])
 
-    chunks = new_chunks
-    metadata = new_metadata
     documents = [d for d in documents if d != filename]
 
     # delete the actual pdf file from disk
@@ -154,7 +193,7 @@ def delete_document(filename: str):
     if os.path.exists(filepath):
         os.remove(filepath)
 
-    # rebuild faiss without the deleted doc
+    # rebuild faiss without deleted doc
     rebuild_faiss()
 
     return {"message": f"Deleted {filename} successfully"}
