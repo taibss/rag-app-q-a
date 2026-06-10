@@ -523,7 +523,29 @@ body {
 
 /* ── MOBILE RESPONSIVE ── */
 @media (max-width: 768px) {
+ .mobile-docs {
+    background: #F7F8FC;
+    border-bottom: 0.5px solid #DDE1EC;
+    padding: 6px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+  }
 
+  .mobile-doc-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 11px;
+    color: #1B2A4A;
+    border-bottom: 0.5px solid #EEF0F6;
+  }
+
+  .mobile-doc-item:last-child { border-bottom: none; }
+  .mobile-doc-item i { color: #8A93A8; font-size: 13px; }
+  .mobile-doc-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* login */
   .login-page { flex-direction: column; }
   .login-left { padding: 32px 24px; }
@@ -533,7 +555,7 @@ body {
 
   /* hide sidebar completely */
   .sidebar { display: none !important; }
-
+.mobile-docs { display: none; }
   /* app becomes vertical */
   .app {
     flex-direction: column;

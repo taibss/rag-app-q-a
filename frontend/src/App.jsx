@@ -2,21 +2,43 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import "./App.css";
 
-const API = import.meta.env.VITE_API_URL || "192.168.29.139:8000";
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 function getInitials(name) {
+  if (!name || name.trim() === "") return "?";
   return name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
 }
 
 export default function App() {
-  const [page, setPage] = useState(() => localStorage.getItem("page") || "login");
-  const [profile, setProfile] = useState(() => {
-    const saved = localStorage.getItem("profile");
-    return saved ? JSON.parse(saved) : { name: "" };
+  const [page, setPage] = useState(() => {
+    try {
+      const savedPage = localStorage.getItem("page");
+      const savedProfile = localStorage.getItem("profile");
+      const profile = savedProfile ? JSON.parse(savedProfile) : null;
+      if (!profile || !profile.name) return "login";
+      return savedPage || "login";
+    } catch {
+      return "login";
+    }
   });
+
+  const [profile, setProfile] = useState(() => {
+    try {
+      const saved = localStorage.getItem("profile");
+      return saved ? JSON.parse(saved) : { name: "" };
+    } catch {
+      return { name: "" };
+    }
+  });
+
   const [messages, setMessages] = useState(() => {
-    const saved = localStorage.getItem("messages");
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem("messages");
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   });
 
   const [nameInput, setNameInput] = useState("");
@@ -31,18 +53,27 @@ export default function App() {
 
   useEffect(() => {
     axios.get(`${API}/documents`)
-      .then(res => setDocuments(res.data.documents))
+      .then(res => setDocuments(Array.isArray(res.data.documents) ? res.data.documents : []))
       .catch(() => {});
   }, []);
 
-  const totalQuestions = messages.filter(m => m.role === "user").length;
-  const successAnswers = messages.filter(m => m.role === "bot" && !m.error).length;
+  // safe versions — always arrays
+  const safeMessages = Array.isArray(messages) ? messages : [];
+  const safeDocuments = Array.isArray(documents) ? documents : [];
+
+  const totalQuestions = safeMessages.filter(m => m.role === "user").length;
+  const successAnswers = safeMessages.filter(m => m.role === "bot" && !m.error).length;
   const accuracy = totalQuestions === 0
     ? "0%" : `${Math.round((successAnswers / totalQuestions) * 100)}%`;
 
-  function handleLogin() {
-    if (!nameInput.trim()) return;
-    setProfile({ name: nameInput.trim() });
+ function handleLogin() {
+    const name = nameInput.trim();
+    if (!name) return;
+    const newProfile = { name };
+    // save directly to localStorage immediately — don't wait for state
+    localStorage.setItem("profile", JSON.stringify(newProfile));
+    localStorage.setItem("page", "home");
+    setProfile(newProfile);
     setPage("home");
   }
 
@@ -63,7 +94,7 @@ export default function App() {
     try {
       await axios.post(`${API}/upload`, formData);
       const res = await axios.get(`${API}/documents`);
-      setDocuments(res.data.documents);
+      setDocuments(Array.isArray(res.data.documents) ? res.data.documents : []);
       alert(`${file.name} uploaded successfully.`);
     } catch {
       alert("Upload failed. Is the backend running?");
@@ -76,7 +107,7 @@ export default function App() {
     try {
       await axios.delete(`${API}/documents/${encodeURIComponent(filename)}`);
       const res = await axios.get(`${API}/documents`);
-      setDocuments(res.data.documents);
+      setDocuments(Array.isArray(res.data.documents) ? res.data.documents : []);
     } catch {
       alert("Could not delete document.");
     }
@@ -84,7 +115,7 @@ export default function App() {
 
   async function handleAsk() {
     if (!question.trim()) return;
-    const newMessages = [...messages, { role: "user", text: question }];
+    const newMessages = [...safeMessages, { role: "user", text: question }];
     setMessages(newMessages);
     setQuestion("");
     setLoading(true);
@@ -185,7 +216,7 @@ export default function App() {
 
           <div className="profile-stats">
             <div className="profile-stat">
-              <div className="profile-stat-num">{documents.length}</div>
+              <div className="profile-stat-num">{safeDocuments.length}</div>
               <div className="profile-stat-label">docs uploaded</div>
             </div>
             <div className="profile-stat">
@@ -200,9 +231,9 @@ export default function App() {
 
           <div className="profile-docs">
             <div className="profile-docs-label">documents</div>
-            {documents.length === 0
+            {safeDocuments.length === 0
               ? <p className="empty-docs">no documents uploaded yet</p>
-              : documents.map((doc, i) => (
+              : safeDocuments.map((doc, i) => (
                 <div key={i} className="profile-doc-item">
                   <i className="ti ti-file-text" aria-hidden="true"></i>
                   <span>{doc}</span>
@@ -227,7 +258,7 @@ export default function App() {
   // ── HOME ───────────────────────────────────────────────────────────────
   return (
     <div className="app">
-{/* mobile top navbar */}
+      {/* mobile top navbar */}
       <div className="mobile-nav">
         <div className="mobile-nav-brand">doc<span>learn</span></div>
         <button className="mobile-nav-profile" onClick={() => setPage("profile")}>
@@ -242,10 +273,23 @@ export default function App() {
           <input type="file" accept=".pdf" onChange={handleUpload}
             disabled={uploading} style={{display:"none"}} />
         </label>
-        <div style={{fontSize:"12px", color:"#8A93A8"}}>
-          {documents.length} doc{documents.length !== 1 ? "s" : ""}
-        </div>
       </div>
+
+      {/* mobile docs list */}
+      {safeDocuments.length > 0 && (
+        <div className="mobile-docs">
+          {safeDocuments.map((doc, i) => (
+            <div key={i} className="mobile-doc-item">
+              <i className="ti ti-file-text" aria-hidden="true"></i>
+              <span>{doc}</span>
+              <button className="delete-btn" onClick={() => handleDelete(doc)}>
+                <i className="ti ti-x" aria-hidden="true"></i>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="sidebar">
         <div className="sidebar-brand">doc<span>learn</span></div>
         <div className="sidebar-divider"></div>
@@ -262,10 +306,10 @@ export default function App() {
 
         <div className="doc-section">
           <div className="doc-label">documents</div>
-          {documents.length === 0
+          {safeDocuments.length === 0
             ? <p className="empty-docs">no documents yet</p>
             : <ul className="doc-list">
-              {documents.map((doc, i) => (
+              {safeDocuments.map((doc, i) => (
                 <li key={i} className="doc-item">
                   <i className="ti ti-file-text doc-icon" aria-hidden="true"></i>
                   <span className="doc-name">{doc}</span>
@@ -291,7 +335,7 @@ export default function App() {
           <div className="topbar-title">conversation</div>
           <div className="topbar-stats">
             <div className="stat">
-              <div className="stat-num">{documents.length}</div>
+              <div className="stat-num">{safeDocuments.length}</div>
               <div className="stat-label">docs</div>
             </div>
             <div className="stat">
@@ -306,10 +350,10 @@ export default function App() {
         </div>
 
         <div className="messages">
-          {messages.length === 0 && (
+          {safeMessages.length === 0 && (
             <p className="empty-chat">upload a pdf and start asking questions.</p>
           )}
-          {messages.map((msg, i) => (
+          {safeMessages.map((msg, i) => (
             <div key={i} className={`message ${msg.role}`}>
               <p>{msg.text}</p>
               {msg.sources && (
