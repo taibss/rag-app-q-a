@@ -3,8 +3,7 @@ uvicorn
 python-multipart
 pdfplumber
 faiss-cpu
-sentence-transformers
-google-generativeai
+requests
 python-dotenv
 numpy
 chromadb

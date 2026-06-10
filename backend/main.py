@@ -1,22 +1,23 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware #required so the requests are not blocked between the ports
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel #data checker
 import pdfplumber #reading pdf
 import faiss #vector database, facebook library
 import numpy as np
-from sentence_transformers import SentenceTransformer #embedding model, text->numbers
-import google.generativeai as genai #library to call LLM
+import requests
 from dotenv import load_dotenv #.env file for the api key
 import os #for accessing the env
 import chromadb #persistent vector storage
 
 load_dotenv()
 
-# configure gemini with api key from .env
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-# load gemini 2.5 flash model
-gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+EMBED_MODEL = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+EMBED_DIM = 2048
+OPENROUTER_EMBED_URL = "https://openrouter.ai/api/v1/embeddings"
+OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 app = FastAPI()
 
@@ -24,6 +25,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
+        "http://127.0.0.1:5173",
         "https://rag-app-q-a-8d5d.vercel.app",
         "https://rag-app-q-a.vercel.app",
     ],
@@ -31,24 +33,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print("Loading embedding model...")
-# BAAI/bge-base-en-v1.5 — better than MiniLM, outputs 768 dimensions
-# uses query/passage prefix format for better retrieval accuracy
-embedder = SentenceTransformer("BAAI/bge-base-en-v1.5")
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        raise exc
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 # use /data on Render (persistent disk), fallback to local for development
 CHROMA_PATH = "/data/chroma_db" if os.path.exists("/data") else "./chroma_db"
+COLLECTION_NAME = "documents"
 chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-collection = chroma_client.get_or_create_collection(
-    name="documents",
-    metadata={"hnsw:space": "cosine"}  # cosine similarity
-)
 
-# in-memory list of document names
-documents = []
-faiss_index = None
-chunks = []
-metadata = []
+
+def create_collection():
+    return chroma_client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
+collection = create_collection()
 
 
 def extract_text_from_pdf(filepath):
@@ -71,63 +76,164 @@ def chunk_text(text, chunk_size=500, overlap=50):
     return result
 
 
+def get_stored_embed_dim() -> int | None:
+    results = collection.get(include=["embeddings"])
+    embeddings = results["embeddings"]
+    if embeddings is None or len(embeddings) == 0:
+        return None
+    return len(embeddings[0])
+
+
+def get_embeddings(texts: list[str], batch_size: int = 16) -> np.ndarray:
+    """Embed text via OpenRouter (Nemotron Embed VL 1B V2)."""
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not set in .env")
+
+    all_embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        resp = requests.post(
+            OPENROUTER_EMBED_URL,
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": EMBED_MODEL,
+                "input": batch if len(batch) > 1 else batch[0],
+                "encoding_format": "float",
+            },
+            timeout=120,
+        )
+        if not resp.ok:
+            raise HTTPException(
+                status_code=502,
+                detail=f"OpenRouter embedding error: {resp.text}",
+            )
+        data = sorted(resp.json()["data"], key=lambda x: x["index"])
+        all_embeddings.extend(item["embedding"] for item in data)
+
+    return np.array(all_embeddings, dtype="float32")
+
+
+def get_chat_answer(prompt: str) -> str:
+    """Generate an answer via OpenRouter chat API."""
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not set in .env")
+
+    resp = requests.post(
+        OPENROUTER_CHAT_URL,
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": CHAT_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=120,
+    )
+    if not resp.ok:
+        detail = resp.text
+        if resp.status_code == 402:
+            detail = (
+                "OpenRouter free credits exhausted for this chat model. "
+                "Use a :free model (default is set) or add credits at openrouter.ai/settings/credits."
+            )
+        raise HTTPException(status_code=502, detail=f"OpenRouter chat error: {detail}")
+    answer = resp.json()["choices"][0]["message"]["content"]
+    if not answer:
+        raise HTTPException(status_code=502, detail="OpenRouter returned an empty answer")
+    return answer
+
+
 def build_faiss_index(embeddings):
-    dimension = embeddings.shape[1]  # 768 for BAAI/bge-base-en-v1.5
+    dimension = embeddings.shape[1]  # 2048 for Nemotron Embed VL 1B V2
     faiss.normalize_L2(embeddings)   # normalize for cosine similarity
     index = faiss.IndexFlatIP(dimension)  # inner product = cosine after normalization
     index.add(embeddings)
     return index
 
 
-def load_from_chroma():
-    """load all chunks from chromadb into memory and rebuild faiss on startup"""
-    global chunks, metadata, documents, faiss_index
+def get_document_filenames(user: str):
+    results = collection.get(where={"user": user}, include=["metadatas"])
+    if not results["metadatas"]:
+        return []
+    return sorted(set(m["filename"] for m in results["metadatas"]))
+
+
+def get_user_index(user: str):
+    """load one user's chunks from chromadb and build a faiss index"""
+    results = collection.get(
+        where={"user": user},
+        include=["documents", "metadatas", "embeddings"],
+    )
+    if not results["documents"]:
+        return None, [], []
+    embeddings = np.array(results["embeddings"]).astype("float32")
+    if embeddings.shape[1] != EMBED_DIM:
+        return None, [], []
+    index = build_faiss_index(embeddings)
+    return index, results["documents"], results["metadatas"]
+
+
+def reset_collection():
+    """drop and recreate chromadb collection (needed when embedding dimension changes)"""
+    global collection
     try:
-        results = collection.get(include=["documents", "metadatas", "embeddings"])
-        if not results["documents"]:
-            print("ChromaDB is empty — fresh start")
-            return
-        chunks = results["documents"]
-        metadata = results["metadatas"]
-        documents = list(set(m["filename"] for m in metadata))
-        # rebuild faiss from stored embeddings
-        embeddings = np.array(results["embeddings"]).astype("float32")
-        faiss_index = build_faiss_index(embeddings)
-        print(f"Loaded {len(chunks)} chunks from ChromaDB ✅")
-    except Exception as e:
-        print(f"Could not load from ChromaDB: {e}")
+        chroma_client.delete_collection(COLLECTION_NAME)
+    except Exception:
+        pass
+    collection = create_collection()
 
 
-def rebuild_faiss():
-    """rebuilds faiss index from chromadb after deletion"""
-    global faiss_index, chunks, metadata
+def clear_user_documents(user: str):
+    """remove all chunks for one user"""
+    results = collection.get(where={"user": user})
+    if results["ids"]:
+        collection.delete(ids=results["ids"])
+
+
+def purge_stale_embeddings():
+    """drop legacy chunks from old models or before per-user storage"""
     try:
-        results = collection.get(include=["documents", "metadatas", "embeddings"])
+        results = collection.get(include=["embeddings", "metadatas"])
         if not results["documents"]:
-            faiss_index = None
-            chunks = []
-            metadata = []
+            reset_collection()
             return
-        chunks = results["documents"]
-        metadata = results["metadatas"]
         embeddings = np.array(results["embeddings"]).astype("float32")
-        faiss_index = build_faiss_index(embeddings)
+        if embeddings.shape[1] != EMBED_DIM:
+            reset_collection()
+            print("Cleared stale embeddings from old model.")
     except Exception as e:
-        print(f"Rebuild faiss error: {e}")
+        print(f"ChromaDB startup check: {e}")
 
 
-# load existing data from chromadb on startup
-load_from_chroma()
+purge_stale_embeddings()
 
 
 @app.get("/documents")
-def list_documents():
-    return {"documents": documents}
+def list_documents(user: str):
+    return {"documents": get_document_filenames(user)}
+
+
+@app.delete("/documents")
+def delete_all_documents(user: str):
+    clear_user_documents(user)
+    return {"message": f"All documents cleared for {user}"}
 
 
 @app.post("/upload")  # this runs whenever a pdf is uploaded
-async def upload_pdf(file: UploadFile = File(...)):
-    global chunks, metadata, documents, faiss_index
+async def upload_pdf(file: UploadFile = File(...), user: str = Form(...)):
+    user = user.strip()
+    if not user:
+        raise HTTPException(status_code=400, detail="User name is required")
+
+    stored_dim = get_stored_embed_dim()
+    if stored_dim is not None and stored_dim != EMBED_DIM:
+        reset_collection()
+
+    os.makedirs("uploads", exist_ok=True)
 
     # save pdf to disk
     filepath = f"uploads/{file.filename}"
@@ -145,83 +251,79 @@ async def upload_pdf(file: UploadFile = File(...)):
         page_chunks = chunk_text(page_text)
         for i, chunk in enumerate(page_chunks):
             new_chunks.append(chunk)
-            new_metadata.append({"filename": file.filename, "page": page_num})
+            new_metadata.append({"filename": file.filename, "page": page_num, "user": user})
 
-    # passage: prefix for document chunks
-    new_embeddings = embedder.encode(
-        [f"passage: {chunk}" for chunk in new_chunks],
-        show_progress_bar=False
-    )
+    new_embeddings = get_embeddings(new_chunks)
     new_embeddings_list = new_embeddings.tolist()
 
-    # store in chromadb permanently
-    ids = [f"{file.filename}_{i}_{len(chunks)+i}" for i in range(len(new_chunks))]
-    collection.add(
-        documents=new_chunks,
-        metadatas=new_metadata,
-        embeddings=new_embeddings_list,
-        ids=ids
-    )
+    existing = collection.get(where={"user": user})
+    base = len(existing["ids"]) if existing["ids"] else 0
+    ids = [f"{user}_{file.filename}_{base + i}" for i in range(len(new_chunks))]
+    try:
+        collection.add(
+            documents=new_chunks,
+            metadatas=new_metadata,
+            embeddings=new_embeddings_list,
+            ids=ids,
+        )
+    except Exception as e:
+        if "dimension" not in str(e).lower():
+            raise
+        reset_collection()
+        collection.add(
+            documents=new_chunks,
+            metadatas=new_metadata,
+            embeddings=new_embeddings_list,
+            ids=ids,
+        )
 
-    # reload everything from chromadb and rebuild faiss
-    rebuild_faiss()
-
-    if file.filename not in documents:
-        documents.append(file.filename)
+    user_chunks = get_user_index(user)[1]
 
     return {
         "message": f"Successfully processed {file.filename}",
         "chunks_added": len(new_chunks),
-        "total_chunks": len(chunks)
+        "total_chunks": len(user_chunks),
     }
 
 
 @app.delete("/documents/{filename}")
-def delete_document(filename: str):
+def delete_document(filename: str, user: str):
     """removes a document and all its chunks from chromadb and rebuilds faiss"""
-    global documents
-
-    if filename not in documents:
+    results = collection.get(where={"$and": [{"filename": filename}, {"user": user}]})
+    if not results["ids"]:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # get all ids belonging to this file from chromadb
-    results = collection.get(where={"filename": filename})
-    if results["ids"]:
-        collection.delete(ids=results["ids"])
-
-    documents = [d for d in documents if d != filename]
+    collection.delete(ids=results["ids"])
 
     # delete the actual pdf file from disk
     filepath = f"uploads/{filename}"
     if os.path.exists(filepath):
         os.remove(filepath)
 
-    # rebuild faiss without deleted doc
-    rebuild_faiss()
-
     return {"message": f"Deleted {filename} successfully"}
 
 
 class QuestionRequest(BaseModel):
     question: str
+    user: str
 
 
 @app.post("/chat")
 def chat(request: QuestionRequest):
+    user = request.user.strip()
+    if not user:
+        raise HTTPException(status_code=400, detail="User name is required")
+
+    faiss_index, chunks, metadata = get_user_index(user)
     if faiss_index is None:
         raise HTTPException(status_code=400, detail="No documents uploaded yet")
 
-    # STEP 1 — convert question to a vector
-    # query: prefix tells BAAI/bge this is a search query (not a document)
-    question_embedding = embedder.encode([f"query: {request.question}"])
-    question_embedding = np.array(question_embedding).astype("float32")
-    faiss.normalize_L2(question_embedding)  # normalize for cosine similarity
+    question_embedding = get_embeddings([request.question])
+    faiss.normalize_L2(question_embedding)
 
-    # STEP 2 — search faiss for top 5 most similar chunks
     k = min(5, len(chunks))
     distances, indices = faiss_index.search(question_embedding, k)
 
-    # STEP 3 — retrieve the actual text of those chunks
     retrieved = []
     sources = []
     for idx in indices[0]:
@@ -231,7 +333,6 @@ def chat(request: QuestionRequest):
 
     context = "\n\n---\n\n".join(retrieved)  # joins the 5 chunks into one big context
 
-    # STEP 4 — build prompt and send to gemini
     prompt = f"""You are a helpful assistant. Answer the user's question based ONLY on the context below.
 If the answer is not in the context, say "I couldn't find that in the uploaded documents."
 
@@ -243,8 +344,5 @@ QUESTION:
 
 ANSWER:"""
 
-    # STEP 5 — gemini generates the answer (it only sees the 5 most relevant chunks faiss found)
-    response = gemini_model.generate_content(prompt)
-    answer = response.text
-
+    answer = get_chat_answer(prompt)
     return {"answer": answer, "sources": sources}

@@ -31,15 +31,7 @@ export default function App() {
     }
   });
 
-  const [messages, setMessages] = useState(() => {
-    try {
-      const saved = localStorage.getItem("messages");
-      const parsed = saved ? JSON.parse(saved) : [];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  });
+  const [messages, setMessages] = useState([]);
 
   const [nameInput, setNameInput] = useState("");
   const [documents, setDocuments] = useState([]);
@@ -47,15 +39,33 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
 
+  const userKey = profile.name?.trim() || "";
+
   useEffect(() => localStorage.setItem("page", page), [page]);
   useEffect(() => localStorage.setItem("profile", JSON.stringify(profile)), [profile]);
-  useEffect(() => localStorage.setItem("messages", JSON.stringify(messages)), [messages]);
 
   useEffect(() => {
-    axios.get(`${API}/documents`)
+    if (!userKey) {
+      setMessages([]);
+      setDocuments([]);
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(`messages_${userKey}`);
+      const parsed = saved ? JSON.parse(saved) : [];
+      setMessages(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setMessages([]);
+    }
+    axios.get(`${API}/documents`, { params: { user: userKey } })
       .then(res => setDocuments(Array.isArray(res.data.documents) ? res.data.documents : []))
-      .catch(() => {});
-  }, []);
+      .catch(() => setDocuments([]));
+  }, [userKey]);
+
+  useEffect(() => {
+    if (!userKey) return;
+    localStorage.setItem(`messages_${userKey}`, JSON.stringify(messages));
+  }, [messages, userKey]);
 
   // safe versions — always arrays
   const safeMessages = Array.isArray(messages) ? messages : [];
@@ -78,7 +88,8 @@ export default function App() {
   }
 
   function handleLogout() {
-    localStorage.clear();
+    localStorage.removeItem("page");
+    localStorage.removeItem("profile");
     setMessages([]);
     setDocuments([]);
     setProfile({ name: "" });
@@ -91,13 +102,20 @@ export default function App() {
     setUploading(true);
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("user", profile.name);
     try {
       await axios.post(`${API}/upload`, formData);
-      const res = await axios.get(`${API}/documents`);
+      const res = await axios.get(`${API}/documents`, { params: { user: profile.name } });
       setDocuments(Array.isArray(res.data.documents) ? res.data.documents : []);
       alert(`${file.name} uploaded successfully.`);
-    } catch {
-      alert("Upload failed. Is the backend running?");
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === "string"
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((d) => d.msg).join(", ")
+          : "Upload failed. Is the backend running?";
+      alert(message);
     } finally {
       setUploading(false);
     }
@@ -105,8 +123,10 @@ export default function App() {
 
   async function handleDelete(filename) {
     try {
-      await axios.delete(`${API}/documents/${encodeURIComponent(filename)}`);
-      const res = await axios.get(`${API}/documents`);
+      await axios.delete(`${API}/documents/${encodeURIComponent(filename)}`, {
+        params: { user: profile.name },
+      });
+      const res = await axios.get(`${API}/documents`, { params: { user: profile.name } });
       setDocuments(Array.isArray(res.data.documents) ? res.data.documents : []);
     } catch {
       alert("Could not delete document.");
@@ -120,15 +140,19 @@ export default function App() {
     setQuestion("");
     setLoading(true);
     try {
-      const res = await axios.post(`${API}/chat`, { question });
+      const res = await axios.post(`${API}/chat`, { question, user: profile.name });
       setMessages([...newMessages, {
         role: "bot", text: res.data.answer,
         sources: res.data.sources, error: false
       }]);
-    } catch {
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === "string"
+        ? detail
+        : "Error getting answer. Is the backend running?";
       setMessages([...newMessages, {
         role: "bot",
-        text: "Error getting answer. Is the backend running?",
+        text: message,
         error: true
       }]);
     } finally {
@@ -246,7 +270,7 @@ export default function App() {
 
           <button className="clear-btn" onClick={() => {
             setMessages([]);
-            localStorage.removeItem("messages");
+            if (userKey) localStorage.removeItem(`messages_${userKey}`);
           }}>
             clear chat history
           </button>
