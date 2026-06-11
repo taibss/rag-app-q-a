@@ -32,12 +32,13 @@ export default function App() {
   });
 
   const [messages, setMessages] = useState([]);
-
   const [nameInput, setNameInput] = useState("");
   const [documents, setDocuments] = useState([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [speakingIdx, setSpeakingIdx] = useState(null);
 
   const userKey = profile.name?.trim() || "";
 
@@ -57,17 +58,19 @@ export default function App() {
     } catch {
       setMessages([]);
     }
-    axios.get(`${API}/documents`, { params: { user: userKey } })
-      .then(res => setDocuments(Array.isArray(res.data.documents) ? res.data.documents : []))
-      .catch(() => setDocuments([]));
-  }, [userKey]);
+    const fetchDocs = () => {
+      axios.get(`${API}/documents`, { params: { user: userKey } })
+        .then(res => setDocuments(Array.isArray(res.data.documents) ? res.data.documents : []))
+        .catch(() => setDocuments([]));
+    };
+    fetchDocs();
+  }, [userKey, page]);
 
   useEffect(() => {
     if (!userKey) return;
     localStorage.setItem(`messages_${userKey}`, JSON.stringify(messages));
   }, [messages, userKey]);
 
-  // safe versions — always arrays
   const safeMessages = Array.isArray(messages) ? messages : [];
   const safeDocuments = Array.isArray(documents) ? documents : [];
 
@@ -76,11 +79,10 @@ export default function App() {
   const accuracy = totalQuestions === 0
     ? "0%" : `${Math.round((successAnswers / totalQuestions) * 100)}%`;
 
- function handleLogin() {
+  function handleLogin() {
     const name = nameInput.trim();
     if (!name) return;
     const newProfile = { name };
-    // save directly to localStorage immediately — don't wait for state
     localStorage.setItem("profile", JSON.stringify(newProfile));
     localStorage.setItem("page", "home");
     setProfile(newProfile);
@@ -143,7 +145,9 @@ export default function App() {
       const res = await axios.post(`${API}/chat`, { question, user: profile.name });
       setMessages([...newMessages, {
         role: "bot", text: res.data.answer,
-        sources: res.data.sources, error: false
+        sources: res.data.sources,
+        evaluation: res.data.evaluation,
+        error: false
       }]);
     } catch (err) {
       const detail = err.response?.data?.detail;
@@ -164,6 +168,49 @@ export default function App() {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleAsk();
+    }
+  }
+
+  // ── STT — Speech to Text (browser built-in, free) ──────────────────────
+  function handleMic() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Your browser doesn't support speech recognition. Try Chrome!");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    setIsListening(true);
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      setQuestion(transcript);
+      setIsListening(false);
+    };
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => setIsListening(false);
+    recognition.start();
+  }
+
+  // ── TTS — Text to Speech (OpenRouter Kokoro) ───────────────────────────
+  async function handleSpeak(text, idx) {
+    try {
+      setSpeakingIdx(idx);
+      const res = await axios.post(`${API}/tts`, { text }, {
+        responseType: "blob"
+      });
+      const url = URL.createObjectURL(res.data);
+      const audio = new Audio(url);
+      audio.onended = () => setSpeakingIdx(null);
+      audio.onerror = () => setSpeakingIdx(null);
+      audio.play();
+    } catch {
+      setSpeakingIdx(null);
+      // fallback to browser TTS if OpenRouter fails
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "en-US";
+      window.speechSynthesis.speak(utterance);
     }
   }
 
@@ -295,7 +342,7 @@ export default function App() {
         <label className="mobile-upload-btn">
           {uploading ? "uploading..." : "upload pdf"}
           <input type="file" accept=".pdf" onChange={handleUpload}
-            disabled={uploading} style={{display:"none"}} />
+            disabled={uploading} style={{ display: "none" }} />
         </label>
       </div>
 
@@ -319,13 +366,13 @@ export default function App() {
         <div className="sidebar-divider"></div>
 
         <label className="upload-area">
-          <i className="ti ti-upload" aria-hidden="true" style={{fontSize:"18px", color:"#7A9CC4"}}></i>
+          <i className="ti ti-upload" aria-hidden="true" style={{ fontSize: "18px", color: "#7A9CC4" }}></i>
           <span className="upload-area-label">upload pdf</span>
           <span className="upload-btn-small">
             {uploading ? "uploading..." : "choose file"}
           </span>
           <input type="file" accept=".pdf" onChange={handleUpload}
-            disabled={uploading} style={{display:"none"}} />
+            disabled={uploading} style={{ display: "none" }} />
         </label>
 
         <div className="doc-section">
@@ -350,7 +397,7 @@ export default function App() {
           <div className="avatar-initials">{getInitials(profile.name)}</div>
           <span className="profile-name-small">{profile.name}</span>
           <i className="ti ti-chevron-right" aria-hidden="true"
-            style={{fontSize:"12px", color:"#4A6080", marginLeft:"auto"}}></i>
+            style={{ fontSize: "12px", color: "#4A6080", marginLeft: "auto" }}></i>
         </button>
       </div>
 
@@ -379,6 +426,14 @@ export default function App() {
           )}
           {safeMessages.map((msg, i) => (
             <div key={i} className={`message ${msg.role}`}>
+              {msg.role === "bot" && !msg.error && (
+                <button
+                  className="speak-btn"
+                  onClick={() => handleSpeak(msg.text, i)}
+                  title="listen to answer">
+                  <i className={`ti ${speakingIdx === i ? "ti-loader" : "ti-volume"}`} aria-hidden="true"></i>
+                </button>
+              )}
               <p>{msg.text}</p>
               {msg.sources && (
                 <div className="sources">
@@ -387,6 +442,16 @@ export default function App() {
                       {s.filename} · p.{s.page}
                     </span>
                   ))}
+                </div>
+              )}
+              {msg.evaluation && (
+                <div className="eval-row">
+                  <span className={`eval-tag ${msg.evaluation.verdict === "pass" ? "pass" : "fail"}`}>
+                    {msg.evaluation.verdict === "pass" ? "✓" : "✗"} {msg.evaluation.verdict}
+                  </span>
+                  <span className="eval-tag">F {Math.round(msg.evaluation.faithfulness * 100)}%</span>
+                  <span className="eval-tag">R {Math.round(msg.evaluation.relevance * 100)}%</span>
+                  <span className="eval-tag">C {Math.round(msg.evaluation.context_sufficiency * 100)}%</span>
                 </div>
               )}
             </div>
@@ -400,6 +465,12 @@ export default function App() {
             onKeyDown={handleKeyDown}
             placeholder="ask anything about your documents..."
             rows={2} />
+          <button
+            className={`mic-btn ${isListening ? "listening" : ""}`}
+            onClick={handleMic}
+            title="speak your question">
+            <i className={`ti ${isListening ? "ti-loader" : "ti-microphone"}`} aria-hidden="true"></i>
+          </button>
           <button className="ask-btn" onClick={handleAsk}
             disabled={loading || !question.trim()}>
             {loading ? "..." : <><span>send</span> <i className="ti ti-arrow-right" aria-hidden="true"></i></>}

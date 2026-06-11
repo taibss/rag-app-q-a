@@ -301,7 +301,34 @@ def delete_document(filename: str, user: str):
 class QuestionRequest(BaseModel):
     question: str
     user: str
+@app.post("/tts")
+async def text_to_speech(request: Request):
+    """convert text to speech using OpenRouter Kokoro TTS"""
+    body = await request.json()
+    text = body.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided")
 
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/audio/speech",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "hexgrad/kokoro-82m",
+            "input": text,
+            "voice": "af_heart",
+            "response_format": "mp3",
+        },
+        timeout=30,
+    )
+
+    if not resp.ok:
+        raise HTTPException(status_code=502, detail=f"TTS error: {resp.text}")
+
+    from fastapi.responses import Response
+    return Response(content=resp.content, media_type="audio/mpeg")
 
 @app.post("/chat")
 def chat(request: QuestionRequest):
@@ -340,4 +367,57 @@ QUESTION:
 ANSWER:"""
 
     answer = get_chat_answer(prompt)
-    return {"answer": answer, "sources": sources}
+
+    # STEP 6 — re-evaluation layer (faithfulness, relevance, context sufficiency)
+    eval_prompt = f"""You are a strict RAG evaluator. Given the context, question and answer below,
+rate each metric from 0.0 to 1.0 and give a verdict.
+
+CONTEXT:
+{context}
+
+QUESTION:
+{request.question}
+
+ANSWER:
+{answer}
+
+Evaluate these 3 metrics:
+1. faithfulness: Is the answer grounded in the context? (1.0 = fully grounded, 0.0 = made up)
+2. relevance: Does the answer address the question? (1.0 = fully relevant, 0.0 = irrelevant)
+3. context_sufficiency: Did the context contain enough info to answer? (1.0 = sufficient, 0.0 = insufficient)
+
+Respond ONLY with valid JSON, no explanation, no markdown:
+{{"faithfulness": 0.0, "relevance": 0.0, "context_sufficiency": 0.0, "verdict": "pass or fail"}}
+
+verdict is "pass" if ALL scores >= 0.5, otherwise "fail"."""
+
+    try:
+        eval_answer = get_chat_answer(eval_prompt)
+        eval_text = eval_answer.strip().replace("```json", "").replace("```", "").strip()
+
+        import json
+        eval_result = json.loads(eval_text)
+
+        faithfulness = eval_result.get("faithfulness", 0)
+        relevance = eval_result.get("relevance", 0)
+        context_sufficiency = eval_result.get("context_sufficiency", 0)
+        verdict = eval_result.get("verdict", "fail")
+
+        # if any metric fails threshold → reject answer
+        if verdict == "fail" or faithfulness < 0.5 or relevance < 0.5:
+            answer = "I couldn't find a reliable answer in the uploaded documents."
+
+        return {
+            "answer": answer,
+            "sources": sources,
+            "evaluation": {
+                "faithfulness": faithfulness,
+                "relevance": relevance,
+                "context_sufficiency": context_sufficiency,
+                "verdict": verdict
+            }
+        }
+
+    except Exception as e:
+        print(f"Evaluation error: {e}")
+        return {"answer": answer, "sources": sources}
