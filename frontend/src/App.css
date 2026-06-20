@@ -457,6 +457,27 @@ body {
   border-bottom-left-radius: 2px;
 }
 
+.message.bot p {
+  margin: 0;
+}
+
+.message.bot p + p {
+  margin-top: 6px;
+}
+
+.message.bot ul, .message.bot ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.message.bot li {
+  margin: 2px 0;
+}
+
+.message.bot strong {
+  font-weight: 500;
+}
+
 .sources {
   margin-top: 6px;
   display: flex;

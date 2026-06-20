@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
 import axios from "axios";
 import "./App.css";
 
@@ -508,7 +509,7 @@ export default function App() {
                   <i className={`ti ${speakingIdx === i ? "ti-loader" : "ti-volume"}`} aria-hidden="true"></i>
                 </button>
               )}
-              <p>{msg.text}</p>
+              <p><ReactMarkdown>{msg.text}</ReactMarkdown></p>
               {msg.sources && (
                 <div className="sources">
                   {msg.sources.map((s, j) => (
