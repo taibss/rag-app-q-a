@@ -882,8 +882,6 @@ body {
   color: #CC4444;
 }
 
-/* ── MIC + SPEAK BUTTONS ── */
-.
 
 /* ── MIC + SPEAK BUTTONS ── */
 .mic-btn {
@@ -938,4 +936,28 @@ body {
 
 .speak-btn:hover {
   color: #1B2A4A;
+}
+
+/* ── WAVEFORM ── */
+.waveform-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 0.5px solid #CC4444;
+  border-radius: 6px;
+  background: #FFF5F5;
+}
+
+.waveform-canvas {
+  flex: 1;
+  height: 36px;
+}
+
+.waveform-label {
+  font-size: 11px;
+  color: #CC4444;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
 }

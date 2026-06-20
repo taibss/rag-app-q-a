@@ -3,10 +3,12 @@ services:
     name: rag-app-backend
     runtime: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && apt-get update && apt-get install -y ffmpeg
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: OPENROUTER_API_KEY
+        sync: false
+      - key: NIM_API_KEY
         sync: false
     disk:
       name: chroma-storage

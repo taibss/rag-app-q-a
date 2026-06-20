@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import "./App.css";
 
@@ -39,6 +39,9 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [speakingIdx, setSpeakingIdx] = useState(null);
+  const canvasRef = useRef(null);
+  const analyserRef = useRef(null);
+  const animFrameRef = useRef(null);
 
   const userKey = profile.name?.trim() || "";
 
@@ -171,25 +174,89 @@ export default function App() {
     }
   }
 
-  // ── STT — Speech to Text (browser built-in, free) ──────────────────────
-  function handleMic() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Your browser doesn't support speech recognition. Try Chrome!");
-      return;
+  // ── STT — Speech to Text (NVIDIA NIM Nemotron ASR) ──────────────────────
+  function drawWaveform() {
+    const canvas = canvasRef.current;
+    const analyser = analyserRef.current;
+    if (!canvas || !analyser) return;
+    const ctx = canvas.getContext("2d");
+    const bufferLength = analyser.fftSize;
+    const dataArray = new Uint8Array(bufferLength);
+
+    function draw() {
+      animFrameRef.current = requestAnimationFrame(draw);
+      analyser.getByteTimeDomainData(dataArray);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#CC4444";
+      ctx.beginPath();
+      const sliceWidth = canvas.width / bufferLength;
+      let x = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        const v = dataArray[i] / 128.0;
+        const y = (v * canvas.height) / 2;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+        x += sliceWidth;
+      }
+      ctx.lineTo(canvas.width, canvas.height / 2);
+      ctx.stroke();
     }
-    const recognition = new SpeechRecognition();
-    recognition.lang = "en-US";
-    recognition.interimResults = false;
-    setIsListening(true);
-    recognition.onresult = (e) => {
-      const transcript = e.results[0][0].transcript;
-      setQuestion(transcript);
-      setIsListening(false);
-    };
-    recognition.onerror = () => setIsListening(false);
-    recognition.onend = () => setIsListening(false);
-    recognition.start();
+    draw();
+  }
+
+  async function handleMic() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      const chunks = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        audioCtx.close();
+        if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+        analyserRef.current = null;
+        setIsListening(true);
+        try {
+          const blob = new Blob(chunks, { type: "audio/webm" });
+          const formData = new FormData();
+          formData.append("file", blob, "recording.webm");
+          const res = await axios.post(`${API}/stt`, formData, {
+            headers: { "Content-Type": "multipart/form-data" },
+          });
+          if (res.data.text) {
+            setQuestion(res.data.text);
+          }
+        } catch {
+          alert("STT failed. Is the backend running?");
+        } finally {
+          setIsListening(false);
+        }
+      };
+
+      setIsListening(true);
+      drawWaveform();
+      mediaRecorder.start();
+      setTimeout(() => {
+        if (mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+      }, 15000);
+    } catch {
+      alert("Microphone access denied.");
+    }
   }
 
   // ── TTS — Text to Speech (OpenRouter Kokoro) ───────────────────────────
@@ -460,11 +527,18 @@ export default function App() {
         </div>
 
         <div className="input-row">
-          <textarea value={question}
-            onChange={e => setQuestion(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="ask anything about your documents..."
-            rows={2} />
+          {isListening ? (
+            <div className="waveform-container">
+              <canvas ref={canvasRef} width={240} height={36} className="waveform-canvas" />
+              <span className="waveform-label">listening...</span>
+            </div>
+          ) : (
+            <textarea value={question}
+              onChange={e => setQuestion(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="ask anything about your documents..."
+              rows={2} />
+          )}
           <button
             className={`mic-btn ${isListening ? "listening" : ""}`}
             onClick={handleMic}

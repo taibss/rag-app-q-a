@@ -13,6 +13,7 @@ import chromadb #persistent vector storage
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+NIM_API_KEY = os.getenv("NIM_API_KEY")
 EMBED_MODEL = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
 CHAT_MODEL = os.getenv("OPENROUTER_CHAT_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 EMBED_DIM = 2048
@@ -33,7 +34,11 @@ app.add_middleware(
 async def unhandled_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, HTTPException):
         raise exc
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "*", "Access-Control-Allow-Headers": "*"},
+    )
 
 # use /data on Render (persistent disk), fallback to local for development
 CHROMA_PATH = "/data/chroma_db" if os.path.exists("/data") else "./chroma_db"
@@ -329,6 +334,88 @@ async def text_to_speech(request: Request):
 
     from fastapi.responses import Response
     return Response(content=resp.content, media_type="audio/mpeg")
+
+@app.post("/stt")
+async def speech_to_text(file: UploadFile = File(...)):
+    """transcribe audio using NVIDIA NIM Nemotron ASR Streaming via gRPC"""
+    if not NIM_API_KEY:
+        raise HTTPException(status_code=500, detail="NIM_API_KEY not set in .env")
+
+    import riva.client
+    import tempfile
+    import subprocess
+    import wave
+    from copy import deepcopy
+
+    audio_content = await file.read()
+
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp_in:
+        tmp_in.write(audio_content)
+        tmp_in_path = tmp_in.name
+
+    tmp_wav_path = tmp_in_path.replace(".webm", ".wav")
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_in_path, "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", tmp_wav_path],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"ffmpeg error: {result.stderr.decode()}")
+
+        auth = riva.client.Auth(
+            uri="grpc.nvcf.nvidia.com:443",
+            use_ssl=True,
+            metadata_args=[
+                ["function-id", "bb0837de-8c7b-481f-9ec8-ef5663e9c1fa"],
+                ["authorization", f"Bearer {NIM_API_KEY}"],
+            ],
+        )
+
+        asr_service = riva.client.ASRService(auth)
+
+        with wave.open(tmp_wav_path, "rb") as wf:
+            sample_rate = wf.getframerate()
+            n_channels = wf.getnchannels()
+            sample_width = wf.getsampwidth()
+            raw_audio = wf.readframes(wf.getnframes())
+
+        config = riva.client.RecognitionConfig(
+            encoding=riva.client.AudioEncoding.LINEAR_PCM,
+            sample_rate_hertz=sample_rate,
+            language_code="en-US",
+            max_alternatives=1,
+            enable_automatic_punctuation=True,
+            audio_channel_count=n_channels,
+        )
+
+        streaming_config = riva.client.StreamingRecognitionConfig(
+            config=deepcopy(config),
+            interim_results=False,
+        )
+
+        chunk_size = 4800
+        chunks = [raw_audio[i:i+chunk_size] for i in range(0, len(raw_audio), chunk_size)]
+        if not chunks:
+            raise HTTPException(status_code=400, detail="No audio data in file")
+
+        responses = asr_service.streaming_response_generator(iter(chunks), streaming_config)
+
+        transcript = ""
+        for response in responses:
+            for result in response.results:
+                if result.alternatives:
+                    transcript = result.alternatives[0].transcript
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"STT error: {str(e)}")
+    finally:
+        if os.path.exists(tmp_in_path):
+            os.remove(tmp_in_path)
+        if os.path.exists(tmp_wav_path):
+            os.remove(tmp_wav_path)
+
+    return {"text": transcript}
 
 @app.post("/chat")
 def chat(request: QuestionRequest):
