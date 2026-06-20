@@ -1,5 +1,6 @@
 # environment variables - NEVER upload these
 backend/.env
+frontend/.env
 
 # python
 backend/venv/
