@@ -42,6 +42,7 @@ export default function App() {
   const canvasRef = useRef(null);
   const analyserRef = useRef(null);
   const animFrameRef = useRef(null);
+  const barsRef = useRef([]);
 
   const userKey = profile.name?.trim() || "";
 
@@ -73,6 +74,43 @@ export default function App() {
     if (!userKey) return;
     localStorage.setItem(`messages_${userKey}`, JSON.stringify(messages));
   }, [messages, userKey]);
+
+  useEffect(() => {
+    if (!isListening || !canvasRef.current || !analyserRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    const analyser = analyserRef.current;
+    const dataArray = new Uint8Array(analyser.fftSize);
+    const MAX_BARS = Math.floor(canvas.width / 5);
+    function draw() {
+      animFrameRef.current = requestAnimationFrame(draw);
+      analyser.getByteTimeDomainData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = (dataArray[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / dataArray.length);
+      const normalized = Math.min(rms * 3, 1);
+      barsRef.current.push(normalized);
+      if (barsRef.current.length > MAX_BARS) barsRef.current.shift();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const bars = barsRef.current;
+      const barWidth = 3, gap = 2, maxH = canvas.height * 0.85;
+      const centerY = canvas.height / 2;
+      const startX = canvas.width - bars.length * (barWidth + gap);
+      for (let i = 0; i < bars.length; i++) {
+        const h = Math.max(2, bars[i] * maxH);
+        const x = startX + i * (barWidth + gap);
+        ctx.fillStyle = "#CC4444";
+        ctx.beginPath();
+        ctx.roundRect(x, centerY - h / 2, barWidth, h, 1.5);
+        ctx.fill();
+      }
+    }
+    draw();
+    return () => { if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); };
+  }, [isListening]);
 
   const safeMessages = Array.isArray(messages) ? messages : [];
   const safeDocuments = Array.isArray(documents) ? documents : [];
@@ -175,47 +213,16 @@ export default function App() {
   }
 
   // ── STT — Speech to Text (NVIDIA NIM Nemotron ASR) ──────────────────────
-  function drawWaveform() {
-    const canvas = canvasRef.current;
-    const analyser = analyserRef.current;
-    if (!canvas || !analyser) return;
-    const ctx = canvas.getContext("2d");
-    const bufferLength = analyser.fftSize;
-    const dataArray = new Uint8Array(bufferLength);
-
-    function draw() {
-      animFrameRef.current = requestAnimationFrame(draw);
-      analyser.getByteTimeDomainData(dataArray);
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "#CC4444";
-      ctx.beginPath();
-      const sliceWidth = canvas.width / bufferLength;
-      let x = 0;
-      for (let i = 0; i < bufferLength; i++) {
-        const v = dataArray[i] / 128.0;
-        const y = (v * canvas.height) / 2;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-        x += sliceWidth;
-      }
-      ctx.lineTo(canvas.width, canvas.height / 2);
-      ctx.stroke();
-    }
-    draw();
-  }
-
   async function handleMic() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 512;
       source.connect(analyser);
       analyserRef.current = analyser;
-
+      barsRef.current = [];
       const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
       const chunks = [];
 
@@ -226,8 +233,9 @@ export default function App() {
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
         audioCtx.close();
-        if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
         analyserRef.current = null;
+        barsRef.current = [];
+        if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
         setIsListening(true);
         try {
           const blob = new Blob(chunks, { type: "audio/webm" });
@@ -247,7 +255,6 @@ export default function App() {
       };
 
       setIsListening(true);
-      drawWaveform();
       mediaRecorder.start();
       setTimeout(() => {
         if (mediaRecorder.state === "recording") {
