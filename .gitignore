@@ -12,4 +12,4 @@ backend/uploads/
 frontend/node_modules/
 
 # mac
-.DS_Store
+.DS_Storebackend/chroma_db/
